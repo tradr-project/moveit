@@ -111,9 +111,51 @@ void point_containment_filter::ShapeMask::removeShape(ShapeHandle handle)
 }
 
 void point_containment_filter::ShapeMask::maskContainment(const sensor_msgs::PointCloud2& data_in,
-                                                          const Eigen::Vector3d& sensor_origin,
                                                           const double min_sensor_dist, const double max_sensor_dist,
                                                           std::vector<int>& mask)
+{
+  boost::mutex::scoped_lock _(shapes_lock_);
+
+  updateBodyPoses();
+
+  // compute a sphere that bounds the entire robot
+  const bodies::BoundingSphere bounding_sphere = computeMaskBoundingSphere();
+
+  computeMask(data_in, min_sensor_dist, max_sensor_dist, mask, bounding_sphere);
+}
+
+void point_containment_filter::ShapeMask::updateBodyPoses() {
+  boost::mutex::scoped_lock _(shapes_lock_);
+
+  bspheres_.resize(bodies_.size());
+
+  Eigen::Affine3d tmp;
+  size_t j = 0;
+  for (std::set<SeeShape>::const_iterator it = bodies_.begin(); it != bodies_.end(); ++it)
+  {
+    if (transform_callback_(it->handle, tmp))
+    {
+      it->body->setPose(tmp);
+      it->body->computeBoundingSphere(bspheres_[j++]);
+    }
+  }
+}
+
+bodies::BoundingSphere point_containment_filter::ShapeMask::computeMaskBoundingSphere() const
+{
+  boost::mutex::scoped_lock _(shapes_lock_);
+
+  bodies::BoundingSphere bound;
+  bodies::mergeBoundingSpheres(bspheres_, bound);
+  return bound;
+}
+
+
+void point_containment_filter::ShapeMask::computeMask(const sensor_msgs::PointCloud2& data_in,
+                                                      const double min_sensor_dist,
+                                                      const double max_sensor_dist,
+                                                      std::vector<int>& mask,
+                                                      const bodies::BoundingSphere& bounding_sphere) const
 {
   boost::mutex::scoped_lock _(shapes_lock_);
   const unsigned int np = data_in.data.size() / data_in.point_step;
@@ -123,22 +165,8 @@ void point_containment_filter::ShapeMask::maskContainment(const sensor_msgs::Poi
     std::fill(mask.begin(), mask.end(), (int)OUTSIDE);
   else
   {
-    Eigen::Affine3d tmp;
-    bspheres_.resize(bodies_.size());
-    std::size_t j = 0;
-    for (std::set<SeeShape>::const_iterator it = bodies_.begin(); it != bodies_.end(); ++it)
-    {
-      if (transform_callback_(it->handle, tmp))
-      {
-        it->body->setPose(tmp);
-        it->body->computeBoundingSphere(bspheres_[j++]);
-      }
-    }
-
     // compute a sphere that bounds the entire robot
-    bodies::BoundingSphere bound;
-    bodies::mergeBoundingSpheres(bspheres_, bound);
-    const double radiusSquared = bound.radius * bound.radius;
+    const double radiusSquared = bounding_sphere.radius * bounding_sphere.radius;
 
     // we now decide which points we keep
     sensor_msgs::PointCloud2ConstIterator<float> iter_x(data_in, "x");
@@ -155,7 +183,7 @@ void point_containment_filter::ShapeMask::maskContainment(const sensor_msgs::Poi
       int out = OUTSIDE;
       if (d < min_sensor_dist || d > max_sensor_dist)
         out = CLIP;
-      else if ((bound.center - pt).squaredNorm() < radiusSquared)
+      else if ((bounding_sphere.center - pt).squaredNorm() < radiusSquared)
         for (std::set<SeeShape>::const_iterator it = bodies_.begin(); it != bodies_.end() && out == OUTSIDE; ++it)
           if (it->body->containsPoint(pt))
             out = INSIDE;
@@ -178,4 +206,22 @@ int point_containment_filter::ShapeMask::getMaskContainment(const Eigen::Vector3
 int point_containment_filter::ShapeMask::getMaskContainment(double x, double y, double z) const
 {
   return getMaskContainment(Eigen::Vector3d(x, y, z));
+}
+
+void point_containment_filter::ShapeMask::maskContainment(const sensor_msgs::PointCloud2& data_in,
+                                                          const Eigen::Vector3d& sensor_origin,
+                                                          const double min_sensor_dist, const double max_sensor_dist,
+                                                          std::vector<int>& mask)
+{
+  maskContainment(data_in, min_sensor_dist, max_sensor_dist, mask);
+}
+
+void point_containment_filter::ShapeMask::maskContainment(const sensor_msgs::PointCloud2& data_in,
+                                                          std::vector<int>& mask)
+{
+  maskContainment(data_in, 0.0, std::numeric_limits<double>::max(), mask);
+}
+
+boost::mutex& point_containment_filter::ShapeMask::getShapesMutex() const {
+  return shapes_lock_;
 }

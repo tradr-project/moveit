@@ -45,6 +45,8 @@
 #include <set>
 #include <map>
 
+#include <moveit/macros/deprecation.h>
+
 #include <boost/thread/mutex.hpp>
 
 namespace point_containment_filter
@@ -74,14 +76,73 @@ public:
   ShapeHandle addShape(const shapes::ShapeConstPtr& shape, double scale = 1.0, double padding = 0.0);
   void removeShape(ShapeHandle handle);
 
+  /** \brief Set the callback that is called when a transform of a shape is needed. */
   void setTransformCallback(const TransformCallback& transform_callback);
 
-  /** \brief Compute the containment mask (INSIDE or OUTSIDE) for a given pointcloud. If a mask element is INSIDE, the
-     point
-      is inside the robot. The point is outside if the mask element is OUTSIDE.
-  */
-  void maskContainment(const sensor_msgs::PointCloud2& data_in, const Eigen::Vector3d& sensor_pos,
-                       const double min_sensor_dist, const double max_sensor_dist, std::vector<int>& mask);
+  /** \brief Update the poses of all bodies in the mask using transform_callback.
+   *
+   * Lock the mutex from getShapeMutex() if you intend to work with the mask in subsequent calls and do not want the
+   * list of bodies to change between the calls.
+   */
+  void updateBodyPoses();
+
+  /** \brief Compute the bounding sphere of all bodies in the mask.
+   *
+   * Be sure to call updateBodyPoses() prior to calling this function (if you think TFs might have changed since
+   * the last call).
+   *
+   * Lock the mutex from getShapeMutex() if you intend to work with the mask in subsequent calls and do not want the
+   * list of bodies to change between the calls.
+   */
+  bodies::BoundingSphere computeMaskBoundingSphere() const;
+
+  /** \brief Compute the point containment mask of the given pointcloud.
+   *
+   * This is the advanced version which requires you to handle mutex locking and updating the body poses manually.
+   * For a simple-use version, refer to maskContainment().
+   *
+   * Points whose distance from (0,0,0) in the pointcloud frame is outside interval [min_sensor_dist, max_sensor_dist]
+   * will be marked as CLIP. Points that are not clipped are either INSIDE or OUTSIDE the union of the given shapes.
+   *
+   * Be sure to call updateBodyPoses() prior to calling this function (if you think TFs might have changed since
+   * the last call).
+   */
+  void computeMask(const sensor_msgs::PointCloud2& data_in, double min_sensor_dist, double max_sensor_dist,
+                   std::vector<int>& mask, const bodies::BoundingSphere& bounding_sphere) const;
+
+  /** \brief Compute the point containment mask of the given pointcloud.
+   *
+   * This is the simple (one-liner) version which calls updateBodyPoses(), computeMaskBoundingSphere() and
+   * computeMask() in succession and handles mutexes appropriately.
+   *
+   * Points whose distance from (0,0,0) in the pointcloud frame is outside interval [min_sensor_dist, max_sensor_dist]
+   * will be marked as CLIP. Points that are not clipped are either INSIDE or OUTSIDE the union of the given shapes.
+   *
+   * \deprecated Argument sensor_pos is unused.
+   */
+  MOVEIT_DEPRECATED void maskContainment(const sensor_msgs::PointCloud2& data_in, const Eigen::Vector3d& sensor_pos,
+                                         const double min_sensor_dist, const double max_sensor_dist,
+                                         std::vector<int>& mask);
+
+  /** \brief Compute the point containment mask of the given pointcloud.
+   *
+   * This is the simple (one-liner) version which calls updateBodyPoses(), computeMaskBoundingSphere() and
+   * computeMask() in succession and handles mutexes appropriately.
+   *
+   * Points whose distance from (0,0,0) in the pointcloud frame is outside interval [min_sensor_dist, max_sensor_dist]
+   * will be marked as CLIP. Points that are not clipped are either INSIDE or OUTSIDE the union of the given shapes.
+   */
+  void maskContainment(const sensor_msgs::PointCloud2& data_in, const double min_sensor_dist,
+                       const double max_sensor_dist, std::vector<int>& mask);
+
+  /** \brief Compute the point containment mask of the given pointcloud.
+   *
+   * This is the simple (one-liner) version which calls updateBodyPoses(), computeMaskBoundingSphere() and
+   * computeMask() in succession and handles mutexes appropriately.
+   *
+   * All points classified as either INSIDE or OUTSIDE the union of the given shapes.
+   */
+  void maskContainment(const sensor_msgs::PointCloud2& data_in, std::vector<int>& mask);
 
   /** \brief Get the containment mask (INSIDE or OUTSIDE) value for an individual point.
       It is assumed the point is in the frame corresponding to the TransformCallback */
@@ -90,6 +151,10 @@ public:
   /** \brief Get the containment mask (INSIDE or OUTSIDE) value for an individual point.
       It is assumed the point is in the frame corresponding to the TransformCallback */
   int getMaskContainment(const Eigen::Vector3d& pt) const;
+
+  /** \brief Get the mutex that you have to lock when calling updateBodyPoses(), computeMaskBoundingSphere(),
+   * computeMask() or getMaskContainment() in a series and do not want the list of bodies to change between the calls.*/
+  boost::mutex& getShapesMutex() const;
 
 private:
   struct SeeShape
